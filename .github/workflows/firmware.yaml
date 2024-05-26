@@ -107,6 +107,26 @@ jobs:
           ref: "master"
           fetch-depth: "1"
 
+      - name: Create Release 'firmware '
+        uses: softprops/action-gh-release@master
+        with:
+          name: firmwareHELLO
+          tag_name: master
+          draft: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release 'firmware_update'
+        uses: softprops/action-gh-release@master
+        with:
+          name: firmwareHELLO2
+          tag_name: master
+          draft: false
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Environment
         id: date
         run: |
