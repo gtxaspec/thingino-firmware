@@ -1,0 +1,77 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      fw:
+        description: 'Create firmware release'
+        required: false
+        type: boolean
+      fwu:
+        description: 'Create firmware update release'
+        required: false
+        type: boolean
+      mod:
+        description: 'Create module release'
+        required: false
+        type: boolean
+      modu:
+        description: 'Create module update release'
+        required: false
+        type: boolean
+      toolchain:
+        description: 'Create toolchain release'
+        required: false
+        type: boolean
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Create fw Release
+      if: ${{ github.event.inputs.fw }}
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: firmware
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create fwu Release
+      if: ${{ github.event.inputs.fwu }}
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: firmware_update
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create mod Release
+      if: ${{ github.event.inputs.mod }}
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: module
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create modu Release
+      if: ${{ github.event.inputs.modu }}
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: module_update
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create toolchain Release
+      if: ${{ github.event.inputs.toolchain }}
+      uses: softprops/action-gh-release@master
+      with:
+        tag_name: toolchain
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
