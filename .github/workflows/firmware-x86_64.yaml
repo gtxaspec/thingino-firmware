@@ -166,7 +166,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get install -y --no-install-recommends --no-install-suggests build-essential bc cmake cpio curl ca-certificates file git gh make gawk jq p7zip-full python3 python3-setuptools procps rsync tzdata u-boot-tools unzip wget libncurses-dev
+          apt-get install -y --no-install-recommends --no-install-suggests build-essential bc cmake cpio curl ca-certificates file git gh make gawk jq p7zip-full python3 python3-setuptools procps rsync tzdata u-boot-tools unzip wget libncurses-dev swig
 
       - name: Set timezone
         run: |
