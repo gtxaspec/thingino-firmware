@@ -90,7 +90,7 @@ def test_isp(ctx):
 ```python
 SUITES = [
     ...
-    Suite("isp", test_isp, WIRED, ("lab", "v4"), header="ISP"),
+    Suite("isp", test_isp, WIRED + ("lab", "v4"), header="ISP"),
 ]
 ```
 
@@ -100,18 +100,18 @@ Row fields:
 | --- | --- |
 | `name` | the `--only` token and label; rows may share one |
 | `fn` | callable taking `ctx` |
-| `modes` | `ALL_MODES`, `WIRED`, or an explicit tuple |
-| `requires` | capabilities that must be present, else the row is skipped silently |
+| `requires` | capabilities that must hold, else the row is skipped silently; start with `WIRED`, `WIFI_ONLY` or `BOTH` for what the profile is |
 | `header` | section banner printed before the row |
 | `optional` | `False` means it always runs and `--only` never filters it out |
 
-Capabilities come from `Ctx.has()`: `lab`, `nolab`, `qmp`, `v4`, `host`,
+Capabilities come from `Ctx.has()`. What the profile is: `wired`,
+`nowired`, `wifi`. What the run has: `lab`, `nolab`, `qmp`, `v4`, `host`,
 `pw`, `pw_ok`, `reboot`.
 
-Table position is execution order. The table is the union of both test
-plans; mode filtering alone yields the wifi sequence and the wired one, so
-put a row where it belongs relative to its neighbours and let the filter
-do the rest. `--only` tokens and the `--help` text derive from the table,
+Table position is execution order. The table is the union of every
+profile's plan; filtering on capabilities alone yields the wifi-only
+sequence and the wired one, so put a row where it belongs relative to its
+neighbours and let the filter do the rest. `--only` tokens and the `--help` text derive from the table,
 so there is no second list to update.
 
 ### Rules for suite functions

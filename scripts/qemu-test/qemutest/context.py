@@ -19,6 +19,13 @@ class Ctx:
         self.report_dir = report_dir
         self.meta = meta
         self.mode = args.mode
+        # What this profile is. Derived from the modality for now; a
+        # profile that declares its capabilities replaces this.
+        self.caps = set()
+        if args.mode in ("eth", "ethwifi"):
+            self.caps.add("wired")
+        if args.mode in ("wifi", "ethwifi"):
+            self.caps.add("wifi")
         self.lab = None
         self.qmp = None
         self.guest_v4 = None
@@ -27,6 +34,9 @@ class Ctx:
 
     def has(self, capability):
         return {
+            "wired": "wired" in self.caps,
+            "nowired": "wired" not in self.caps,
+            "wifi": "wifi" in self.caps,
             "lab": self.lab is not None,
             "nolab": self.lab is None,
             "qmp": self.qmp is not None,
