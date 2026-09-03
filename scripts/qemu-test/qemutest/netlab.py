@@ -10,7 +10,6 @@ Requires root (tap creation, dnsmasq, ports 123/514).
 """
 
 import os
-import re
 import socket
 import struct
 import subprocess

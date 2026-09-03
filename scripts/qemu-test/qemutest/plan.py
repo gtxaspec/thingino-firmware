@@ -1,8 +1,8 @@
 """The ordered suite table that drives a run."""
 
-import time
 from .config import PORTAL_PORT, SSH_FWD_PORT, WEBUI_PORT
 from .playwright import run_playwright
+from .probes import tcp_open, until
 from .suites.common import setup_ssh, test_boot, test_health, test_services
 from .suites.net import test_dns_and_pref, test_dual_stack_listeners, test_ethernet, test_ethwifi_behavior, test_ipv4_dhcp, test_ipv6, test_link_flap, test_mdns, test_ntp, test_persist_reboot, test_syslog_remote
 from .suites.onvif import test_onvif
@@ -24,7 +24,7 @@ def suite_ssh_lab(ctx):
 
 
 def suite_ssh_forward(ctx):
-    time.sleep(2)                      # let the bridge settle before keying
+    until(lambda: tcp_open("127.0.0.1", SSH_FWD_PORT), 15, 1)
     setup_ssh(ctx, "127.0.0.1", SSH_FWD_PORT)
 
 

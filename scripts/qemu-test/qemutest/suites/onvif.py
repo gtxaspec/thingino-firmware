@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import time
 
 
 def streamer_auth(guest):
@@ -97,15 +96,9 @@ def test_onvif(ctx):
         with open(os.path.join(report_dir, f"onvif-{name}.xml"), "w") as f:
             f.write(f"<!-- HTTP {status} -->\n{text}")
 
-    ok = False
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        rc, out = guest.run("ps w | grep -v grep | grep wsd_simple_server")
-        if "wsd_simple_server" in out:
-            ok = True
-            break
-        time.sleep(3)
-    res.check("onvif_wsd_running", ok)
+    out = guest.run_until("ps w | grep -v grep | grep wsd_simple_server",
+                          lambda o: "wsd_simple_server" in o, 60, 3)
+    res.check("onvif_wsd_running", "wsd_simple_server" in out)
 
     replies = lab.ws_discovery_probe()
     match = [r for r in replies if "NetworkVideoTransmitter" in r

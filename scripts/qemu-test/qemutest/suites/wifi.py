@@ -5,18 +5,15 @@ import time
 from ..config import PORTAL_PORT, WEBUI_PORT
 from ..launch import warm_reset_timer_wedge
 from ..playwright import run_playwright
+from ..probes import http_get, http_ok, until
 
 
 def test_wifi_portal(ctx):
     guest, res = ctx.guest, ctx.res
     # The portal is deferred behind the wired-uplink probe and its radio
     # prescan, so it can trail login by tens of seconds. Wait for the AP.
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        rc, out = guest.run("wpa_cli -i wlan0 status 2>/dev/null")
-        if "mode=AP" in out:
-            break
-        time.sleep(3)
+    out = guest.run_until("wpa_cli -i wlan0 status 2>/dev/null",
+                          lambda o: "mode=AP" in o, 120, 3)
     res.check("wifi_ap_mode", "mode=AP" in out)
     res.check("wifi_ssid_set", "ssid=THINGINO-" in out)
 
@@ -24,14 +21,9 @@ def test_wifi_portal(ctx):
     res.check("wlan0_has_ip", "172.16.0.1" in out)
 
     # The portal-mode uhttpd restart trails the AP by several seconds
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        rc, out = guest.run(
-            "curl -s -o /tmp/_portal -w '%{http_code}:%{size_download}' "
-            "http://172.16.0.1/", timeout=15)
-        if "200:" in out:
-            break
-        time.sleep(3)
+    out = guest.run_until(
+        "curl -s -o /tmp/_portal -w '%{http_code}:%{size_download}' "
+        "http://172.16.0.1/", lambda o: "200:" in o, 60, 3, timeout=15)
     res.check("portal_http_200", "200:" in out)
     m = re.search(r"200:(\d+)", out)
     portal_bytes = int(m.group(1)) if m else 0
@@ -130,7 +122,8 @@ def test_provision_reboot_sta(ctx):
             "}\n"
             "APEOF")
     guest.run("wpa_supplicant -B -i wlan1 -c /tmp/fake_ap.conf", timeout=10)
-    time.sleep(3)
+    guest.run_until("wpa_cli -i wlan1 -p /var/run/wpa_fakeap status",
+                    lambda o: "mode=AP" in o, 15, 2)
     guest.run("ip addr add 192.168.1.1/24 dev wlan1")
 
     rc, out = guest.run(
@@ -143,17 +136,20 @@ def test_provision_reboot_sta(ctx):
     guest.run("wpa_cli -i wlan0 ap_scan 1")
     print("  Triggering wlan0 rescan...")
     guest.run("wpa_cli -i wlan0 scan")
-    time.sleep(15)
+    guest.run_until("wpa_cli -i wlan0 scan_results",
+                    lambda o: "TestNetwork" in o, 30, 3)
 
-    connected = False
-    for attempt in range(7):
+    attempts = []
+
+    def sta_up():
         rc, out = guest.run("wpa_cli -i wlan0 status")
         if "wpa_state=COMPLETED" in out and "TestNetwork" in out:
-            connected = True
-            break
-        print(f"  Scan attempt {attempt + 1}...")
-        guest.run("wpa_cli -i wlan0 scan")
-        time.sleep(10)
+            return True
+        attempts.append(1)
+        print(f"  Scan attempt {len(attempts)}...")
+        guest.run("wpa_cli -i wlan0 scan")       # nudge, then look again
+        return False
+    connected = bool(until(sta_up, 70, 10))
     res.check("sta_connected_to_ap", connected,
               "wlan0 should connect to TestNetwork via WPA-PSK")
 
@@ -169,12 +165,12 @@ def test_provision_reboot_sta(ctx):
     # The provisioned password must open the web UI. Re-bridge eth0 for
     # the slirp forward and drive the login form, capturing the login
     # screen and the logged-in page for the report.
-    import urllib.request
-    time.sleep(2)
     # Static bridge config: a fresh DHCP exchange after the reboot gets
     # the next slirp address, but the host forwards point at the slirp
     # default (10.0.2.15).
     guest.run("ip link set eth0 up", timeout=8)
+    guest.run_until("cat /sys/class/net/eth0/carrier 2>&1",
+                    lambda o: o.strip().endswith("1"), 10, 1)
     guest.run("ip addr flush dev eth0; ip addr add 10.0.2.15/24 dev eth0; "
               "ip route add default via 10.0.2.2 2>/dev/null; true",
               timeout=10)
@@ -182,16 +178,8 @@ def test_provision_reboot_sta(ctx):
     # entry for 10.0.2.15, which otherwise points the host forwards at
     # the previous boot's MAC until it expires.
     guest.run("ping -c 1 -W 2 10.0.2.2", timeout=10)
-    webui_up = False
-    deadline = time.time() + 45
-    while time.time() < deadline:
-        try:
-            urllib.request.urlopen(
-                f"http://localhost:{WEBUI_PORT + 1}/", timeout=3)
-            webui_up = True
-            break
-        except Exception:
-            time.sleep(2)
+    webui_up = until(lambda: http_ok(f"http://localhost:{WEBUI_PORT + 1}/", 3),
+                     45, 2)
     res.check("webui_up_after_reboot", webui_up)
     if webui_up:
         run_playwright(res, report_dir, "webui-login", {
@@ -207,22 +195,12 @@ def test_provision_reboot_sta(ctx):
 
 def test_host_portal_access(ctx):
     res = ctx.res
-    import urllib.request
     # The forward to the guest AP settles a beat after the bridge comes up,
     # and a loaded TCG guest can miss a single window; the in-guest twin
     # (portal_http_200) already polls, so poll here too.
-    status, body, err = None, "", "no attempt"
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            req = urllib.request.urlopen(
-                f"http://localhost:{PORTAL_PORT}/", timeout=5)
-            status = req.status
-            body = req.read(1024).decode(errors="replace")
-            break
-        except Exception as e:
-            err = str(e)
-            time.sleep(3)
+    status, body, err = until(
+        lambda: http_get(f"http://localhost:{PORTAL_PORT}/", 5),
+        60, 3, ok=lambda r: r[0] == 200)
     res.check("host_portal_reachable", status == 200,
               "" if status == 200 else err)
     res.check("host_portal_content",

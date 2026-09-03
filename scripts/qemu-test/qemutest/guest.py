@@ -2,6 +2,7 @@
 
 import subprocess
 from .config import SSH_OPTS
+from .probes import until
 
 
 class Guest:
@@ -54,3 +55,8 @@ class Guest:
         if via == "ssh" or self.ssh_ok:
             return self._ssh(cmd, timeout)
         return self._serial(cmd, timeout)
+
+    def run_until(self, cmd, ok, wait, every=2.0, **kw):
+        """Re-run cmd until ok(output) holds or wait seconds pass.
+        Returns the last output either way, for the check detail."""
+        return until(lambda: self.run(cmd, **kw)[1], wait, every, ok)

@@ -3,20 +3,13 @@
 import re
 import time
 from ..launch import warm_reset_timer_wedge
+from ..probes import until
 
 
 def test_ethernet(ctx):
     guest, res = ctx.guest, ctx.res
-    ok = False
-    out = ""
-    deadline = time.time() + 45
-    while time.time() < deadline:
-        rc, out = guest.run("ip addr show eth0")
-        if "inet " in out:
-            ok = True
-            break
-        time.sleep(2)
-    res.check("eth0_has_ip", ok, out.strip()[:80])
+    out = guest.run_until("ip addr show eth0", lambda o: "inet " in o, 45, 2)
+    res.check("eth0_has_ip", "inet " in out, out.strip()[:80])
 
     rc, out = guest.run("ip route")
     res.check("default_route_exists", "default" in out)
@@ -67,15 +60,10 @@ def in_dhcpv6_range(addr):
 def test_ipv4_dhcp(ctx):
     guest, res, lab = ctx.guest, ctx.res, ctx.lab
     """DHCPv4 against the host dnsmasq."""
-    ok = False
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        addrs = get_guest_addrs(guest)
-        if any(a.startswith("192.168.100.") for a in addrs["v4"]):
-            ok = True
-            break
-        time.sleep(2)
-    res.check("dhcp4_lease", ok,
+    def leased(a):
+        return any(x.startswith("192.168.100.") for x in a["v4"])
+    addrs = until(lambda: get_guest_addrs(guest), 60, 2, ok=leased)
+    res.check("dhcp4_lease", leased(addrs),
               ", ".join(addrs["v4"]) if addrs["v4"] else "no v4 addr")
 
     rc, out = guest.run("ip -4 route")
@@ -96,14 +84,8 @@ def test_ipv4_dhcp(ctx):
 def test_ipv6(ctx):
     guest, res, lab = ctx.guest, ctx.res, ctx.lab
     """Link-local, DAD, SLAAC, DHCPv6, RDNSS."""
-    ll = None
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        addrs = get_guest_addrs(guest)
-        if addrs["v6_ll"]:
-            ll = addrs["v6_ll"][0]
-            break
-        time.sleep(2)
+    addrs = until(lambda: get_guest_addrs(guest), 30, 2, ok=lambda a: a["v6_ll"])
+    ll = addrs["v6_ll"][0] if addrs["v6_ll"] else None
     res.check("ipv6_lladdr", ll is not None, ll or "no fe80 on eth0")
 
     rc, out = guest.run("ip -6 addr show eth0")
@@ -116,31 +98,22 @@ def test_ipv6(ctx):
 
     # SLAAC address: /64 from the RA prefix with a full interface id
     # (the DHCPv6 IA_NA lease is a /128 from the ::100-::1ff pool).
-    slaac = None
-    deadline = time.time() + 45
-    while time.time() < deadline:
-        addrs = get_guest_addrs(guest)
-        for a, plen in addrs["v6_global"]:
-            if (a.startswith("fd00:5c1:") and plen == 64
-                    and not in_dhcpv6_range(a)):
-                slaac = a
-                break
-        if slaac:
-            break
-        time.sleep(2)
+    def find_slaac(a):
+        for x, plen in a["v6_global"]:
+            if (x.startswith("fd00:5c1:") and plen == 64
+                    and not in_dhcpv6_range(x)):
+                return x
+        return None
+    slaac = find_slaac(until(lambda: get_guest_addrs(guest), 45, 2,
+                             ok=find_slaac))
     res.check("ipv6_slaac_addr", slaac is not None,
               slaac or "no fd00:5c1: /64 addr (RA not processed?)")
 
     # RA-derived routes can lag by one advertisement interval; netlab
     # advertises every 10s, so wait comfortably past that.
-    got_route = False
-    deadline = time.time() + 35
-    while time.time() < deadline:
-        rc, out = guest.run("ip -6 route")
-        if re.search(r"default via fe80::[0-9a-f:]+ dev eth0", out):
-            got_route = True
-            break
-        time.sleep(3)
+    def ra_route(o):
+        return bool(re.search(r"default via fe80::[0-9a-f:]+ dev eth0", o))
+    got_route = ra_route(guest.run_until("ip -6 route", ra_route, 35, 3))
     res.check("ipv6_default_route", got_route, "default route from RA")
 
     if slaac:
@@ -153,16 +126,14 @@ def test_ipv6(ctx):
     odhcp_running = "odhcp6c" in out
     res.check("odhcp6c_running", odhcp_running)
 
-    dhcp6_addr = None
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        addrs = get_guest_addrs(guest)
-        for a, _plen in addrs["v6_global"]:
-            if in_dhcpv6_range(a):
-                dhcp6_addr = a
-        if dhcp6_addr:
-            break
-        time.sleep(2)
+    def find_dhcp6(a):
+        found = None
+        for x, _plen in a["v6_global"]:
+            if in_dhcpv6_range(x):
+                found = x
+        return found
+    dhcp6_addr = find_dhcp6(until(lambda: get_guest_addrs(guest), 30, 2,
+                                  ok=find_dhcp6))
     res.check("dhcpv6_stateful_addr", dhcp6_addr is not None,
               dhcp6_addr or "no IA_NA address from DHCPv6 range")
 
@@ -220,12 +191,9 @@ def test_mdns(ctx):
     # address event fires, RA lifetime refreshes included. Real mDNS
     # clients retry; a dead responder still fails every attempt.
     def mq(name, rtype, tries=3):
-        for i in range(tries):
-            r = lab.mdns_query(name, rtype)
-            if r:
-                return r
-            time.sleep(3)
-        return []
+        # same attempt count as before: tries attempts, 3s apart
+        return until(lambda: lab.mdns_query(name, rtype),
+                     (tries - 1) * 3, 3) or []
 
     a = mq(f"{hostname}.local", "A")
     res.check("mdns_resolve_a", guest_v4 in a,
@@ -278,16 +246,11 @@ def test_syslog_remote(ctx):
     """Point busybox syslogd at the host sink and verify delivery."""
     guest.run("killall syslogd 2>/dev/null; sleep 1; "
               "syslogd -R 192.168.100.1", timeout=10)
-    time.sleep(2)
+    guest.run_until("ps w", lambda o: "syslogd -R" in o, 10, 1)
     marker = f"qemu-test-syslog-{int(time.time())}"
     guest.run(f"logger {marker}")
-    got = False
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if any(marker in msg for _, msg in lab.syslog.messages):
-            got = True
-            break
-        time.sleep(1)
+    got = bool(until(lambda: any(marker in msg
+                                 for _, msg in lab.syslog.messages), 10, 1))
     res.check("syslog_remote_delivery", got,
               f"{len(lab.syslog.messages)} messages received")
     guest.run("killall syslogd 2>/dev/null; /etc/init.d/S01syslogd start "
@@ -301,32 +264,18 @@ def test_link_flap(ctx):
     backend link state into the PHY's BMSR, and the guest drivers poll
     the PHY, so carrier must follow within a few poll intervals."""
     qmp.set_link("n0", False)
-    time.sleep(3)
-    res.check("link_down_datapath", not lab.ping(guest_v4),
+    res.check("link_down_datapath", until(lambda: not lab.ping(guest_v4), 20, 1),
               "host ping must fail while link is down")
     # phylib polls the PHY every second of guest time, which can lag
     # wall time badly on loaded runners: poll instead of one shot.
-    carrier_down = False
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        rc, out = guest.run("cat /sys/class/net/eth0/carrier 2>&1",
-                            via="serial")
-        if out.strip().endswith("0"):
-            carrier_down = True
-            break
-        time.sleep(2)
-    res.check("link_down_carrier", carrier_down,
+    out = guest.run_until("cat /sys/class/net/eth0/carrier 2>&1",
+                          lambda o: o.strip().endswith("0"), 20, 2, via="serial")
+    res.check("link_down_carrier", out.strip().endswith("0"),
               "carrier must drop with the link")
 
     qmp.set_link("n0", True)
-    ok = False
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        if lab.ping(guest_v4):
-            ok = True
-            break
-        time.sleep(2)
-    res.check("link_up_datapath", ok, "host ping works again")
+    res.check("link_up_datapath", bool(until(lambda: lab.ping(guest_v4), 60, 2)),
+              "host ping works again")
 
     rc, out = guest.run("ip -4 addr show eth0", via="serial")
     res.check("link_flap_addr_kept", "192.168.100." in out)
@@ -343,7 +292,6 @@ def test_persist_reboot(ctx):
               via="serial", timeout=15)
     ser.read()                 # drop the pre-reboot prompt still buffered
     ser.write("reboot\n")
-    time.sleep(5)
     # expect_reboot: do not accept a prompt until the machine has actually
     # reset, so we assert persistence against the rebooted system and not
     # the dying pre-reboot shell.
