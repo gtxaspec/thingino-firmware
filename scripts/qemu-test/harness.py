@@ -749,15 +749,25 @@ def test_provision_reboot_sta(ctx):
 def test_host_portal_access(ctx):
     res = ctx.res
     import urllib.request
-    try:
-        req = urllib.request.urlopen(
-            f"http://localhost:{PORTAL_PORT}/", timeout=5)
-        body = req.read(1024).decode(errors="replace")
-        res.check("host_portal_reachable", req.status == 200)
-        res.check("host_portal_content",
-                  "Thingino" in body or "<!DOCTYPE" in body)
-    except Exception as e:
-        res.fail("host_portal_reachable", str(e))
+    # The forward to the guest AP settles a beat after the bridge comes up,
+    # and a loaded TCG guest can miss a single window; the in-guest twin
+    # (portal_http_200) already polls, so poll here too.
+    status, body, err = None, "", "no attempt"
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        try:
+            req = urllib.request.urlopen(
+                f"http://localhost:{PORTAL_PORT}/", timeout=5)
+            status = req.status
+            body = req.read(1024).decode(errors="replace")
+            break
+        except Exception as e:
+            err = str(e)
+            time.sleep(3)
+    res.check("host_portal_reachable", status == 200,
+              "" if status == 200 else err)
+    res.check("host_portal_content",
+              "Thingino" in body or "<!DOCTYPE" in body)
 
 
 def test_host_webui_access(ctx):
