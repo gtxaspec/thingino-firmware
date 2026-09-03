@@ -28,11 +28,12 @@ import signal
 import subprocess
 import sys
 import time
-from .config import REPO_ROOT, SOC_MACHINES
+from .config import PROFILES_DIR, REPO_ROOT, SOC_MACHINES
 from .context import Ctx
 from .guest import Guest
 from .launch import find_qemu, start_qemu
 from .plan import OPTIONAL_SUITES, run_suites
+from .profile import host_qemu, load as load_profile, newest_image
 from .netlab import enter_netns
 from .qmp import Qmp
 from .results import TestResult, load_expected
@@ -60,25 +61,28 @@ def collect_artifacts(guest, report_dir):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--image", required=True, help="Path to thingino .bin image")
-    p.add_argument("--soc", required=True, help="SoC variant (t31x, t10n, ...)")
-    p.add_argument("--mode", required=True, choices=["wifi", "eth", "ethwifi"],
-                   help="Device modality to test")
-    p.add_argument("--net", default="slirp", choices=["slirp", "tap"],
+    p.add_argument("--profile", default=None,
+                   help="Test profile (configs/cameras-testing/<name>); its "
+                        "qemu-test.json supplies SoC, capabilities, backend "
+                        "and the default flags, and the newest built image "
+                        "is used unless --image is given")
+    p.add_argument("--image", default=None, help="Path to thingino .bin image")
+    p.add_argument("--soc", default=None, help="SoC variant (t31x, t10n, ...)")
+    p.add_argument("--mode", default=None, choices=["wifi", "eth", "ethwifi"],
+                   help="Device modality, when not running a profile")
+    p.add_argument("--net", default=None, choices=["slirp", "tap"],
                    help="Network backend (tap enables the full network lab)")
     p.add_argument("--qemu", default=None, help="Path to qemu-system-mipsel")
     p.add_argument("--timeout", type=int, default=240,
                    help="Boot timeout in seconds")
-    p.add_argument("--host-tests", action="store_true",
+    p.add_argument("--host-tests", action="store_true", default=None,
                    help="Also run host-side HTTP tests (slirp mode)")
-    p.add_argument("--playwright", action="store_true",
+    p.add_argument("--playwright", action="store_true", default=None,
                    help="Run Playwright browser tests")
-    p.add_argument("--reboot-test", action="store_true",
+    p.add_argument("--reboot-test", action="store_true", default=None,
                    help="Run reboot persistence / STA connection tests")
     p.add_argument("--report-dir", default=None,
                    help="Report output dir (default: output/<branch>/qemu-test-reports/)")
-    p.add_argument("--profile", default=None,
-                   help="Profile name for reporting (default qemu_<soc>)")
     p.add_argument("--only", default=None,
                    help="Comma list of optional suites to run: "
                         + ",".join(OPTIONAL_SUITES))
@@ -87,10 +91,61 @@ def main():
                         "expected list instead of enforcing it")
     args = p.parse_args()
 
+    # A profile supplies everything a run needs; explicit flags override.
+    # Without one, --image/--soc/--mode describe the run by hand.
+    if args.profile and not (args.image and args.soc and args.mode):
+        try:
+            prof = load_profile(args.profile)
+        except FileNotFoundError:
+            sys.exit(f"No qemu-test.json for {args.profile} under "
+                     f"{os.path.relpath(PROFILES_DIR, REPO_ROOT)}")
+        args.soc = args.soc or prof.soc
+        args.mode = args.mode or prof.mode
+        args.net = args.net or prof.net
+        caps = prof.caps
+        for flag, value in prof.defaults().items():
+            if getattr(args, flag) is None:
+                setattr(args, flag, value)
+        if not args.image:
+            args.image = newest_image(args.profile)
+            if not args.image:
+                sys.exit(f"No built image found for {args.profile} "
+                         f"(looked in output/**/{args.profile}-*/images/)\n"
+                         f"Build it with: make GROUP=testing "
+                         f"CAMERA={args.profile}")
+        if not args.qemu and not os.environ.get("QEMU_BIN"):
+            args.qemu = host_qemu(args.image)
+    else:
+        missing = [f for f in ("image", "soc", "mode") if not getattr(args, f)]
+        if missing:
+            sys.exit("give --profile, or all of --image/--soc/--mode "
+                     "(missing: " + ", ".join("--" + m for m in missing) + ")")
+        caps = {"wired"} if args.mode in ("eth", "ethwifi") else set()
+        if args.mode in ("wifi", "ethwifi"):
+            caps.add("wifi")
+    args.net = args.net or "slirp"
+    for flag in ("host_tests", "playwright", "reboot_test"):
+        if getattr(args, flag) is None:
+            setattr(args, flag, False)
+    args.caps = sorted(caps)
+
     if args.soc not in SOC_MACHINES:
         sys.exit(f"Unknown SoC: {args.soc}")
     if args.net == "tap" and os.geteuid() != 0:
-        sys.exit("tap mode requires root (use run.sh, it handles sudo)")
+        # The lab needs root. Runner sudo policies ignore -E, so carry the
+        # inputs as explicit assignments; npx must stay findable across
+        # sudo's secure_path.
+        npx = os.environ.get("NPX_BIN") or shutil.which("npx") or ""
+        carry = {"QEMU_BIN": os.environ.get("QEMU_BIN", args.qemu or ""),
+                 "NPX_BIN": npx,
+                 "PLAYWRIGHT_BROWSERS_PATH":
+                     os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+                 "SERIAL_PACE_MS": os.environ.get("SERIAL_PACE_MS", "")}
+        # Hand the resolved image and qemu to the re-exec'd copies so they
+        # do not resolve the profile again (last occurrence wins in argparse).
+        resolved = ["--image", args.image] + (["--qemu", args.qemu] if args.qemu else [])
+        os.execvp("sudo", ["sudo", "-E", *(f"{k}={v}" for k, v in carry.items()),
+                           sys.executable, *sys.argv, *resolved])
     if args.net == "tap":
         enter_netns()          # re-execs once; returns only when inside
 
@@ -243,8 +298,7 @@ def main():
     # The ordered check list is the contract a profile makes with its
     # readers (reports, CI diffs). It lives beside the profile and any
     # deviation fails the run, so a check cannot silently disappear.
-    expected_file = os.path.join(REPO_ROOT, "configs", "cameras-testing",
-                                 profile, "expected-checks.txt")
+    expected_file = os.path.join(PROFILES_DIR, profile, "expected-checks.txt")
     shown = os.path.relpath(expected_file, REPO_ROOT)
     if args.update_expected:
         with open(expected_file, "w") as f:

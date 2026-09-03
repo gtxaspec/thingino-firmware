@@ -19,13 +19,7 @@ class Ctx:
         self.report_dir = report_dir
         self.meta = meta
         self.mode = args.mode
-        # What this profile is. Derived from the modality for now; a
-        # profile that declares its capabilities replaces this.
-        self.caps = set()
-        if args.mode in ("eth", "ethwifi"):
-            self.caps.add("wired")
-        if args.mode in ("wifi", "ethwifi"):
-            self.caps.add("wifi")
+        self.caps = set(args.caps)          # what the profile declares it is
         self.lab = None
         self.qmp = None
         self.guest_v4 = None

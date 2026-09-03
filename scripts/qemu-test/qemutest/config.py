@@ -4,6 +4,7 @@ import os
 # scripts/qemu-test (the package sits one level below it) and the repo root
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+PROFILES_DIR = os.path.join(REPO_ROOT, "configs", "cameras-testing")
 
 
 SOC_MACHINES = {

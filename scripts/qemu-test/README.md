@@ -16,9 +16,11 @@ make GROUP=testing CAMERA=qemu_t31x_eth fast  # build a test profile
 scripts/qemu-test/run.sh qemu_t31x_eth        # run its suite
 ```
 
-`run.sh` derives the SoC and modality from the profile name, finds the
-newest matching image under `output/`, picks up the QEMU built alongside
-it, and re-execs itself under `sudo` when the run needs a tap device.
+`run.sh` hands the profile to the driver, which reads what the profile
+is from its `qemu-test.json`, finds the newest matching image under
+`output/`, picks up the QEMU built alongside it, and re-execs itself
+under `sudo` and into a private network namespace when the run needs a
+tap device.
 
 ```sh
 run.sh qemu_t31x                 # wifi portal flow (slirp)
@@ -37,16 +39,24 @@ and passwordless `sudo` for tap mode. A tap run lives in its own network
 namespace (`qt-<pid>`), so it never touches the host's DNS, NTP or syslog
 ports, nothing gets parked, and several tap runs can share one host.
 
-## Modality is the profile name
+## A profile describes itself
 
-| Profile suffix | Mode | Backend | What it exercises |
-| --- | --- | --- | --- |
-| *(none)* | `wifi` | slirp | portal, provisioning, reboot into STA |
-| `_eth` | `eth` | tap | wired only, full network lab |
-| `_ethwifi` | `ethwifi` | tap | wired + WiFi, gateway takeover |
+`configs/cameras-testing/<profile>/qemu-test.json`:
 
-XBurst2 profiles (`t40*`, `t41*`) ship the wired stack even without a
-suffix, so a bare name means `ethwifi` there.
+```json
+{"soc": "t31x", "caps": ["wired", "wifi"], "net": "tap"}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `soc` | key into `SOC_MACHINES` (machine, RAM) |
+| `caps` | what the camera has: `wired` (an uplink), `wifi` (a radio) |
+| `net` | default backend: `tap` runs the full lab, `slirp` bridges through host port forwards |
+
+What runs follows from the capabilities: a wifi-only camera exercises the
+portal, provisioning and the reboot into STA; a wired one the full network
+lab; one with both also the wired-gateway takeover. Nothing is inferred
+from the profile's name.
 
 ## Architecture
 
@@ -134,9 +144,8 @@ so there is no second list to update.
 ### Adding a SoC or profile
 
 A SoC is one line in `SOC_MACHINES` in `qemutest/config.py` (machine name,
-RAM in MB). A profile needs no harness change at all: name it
-`qemu_<soc>[_eth|_ethwifi]` under `configs/cameras-testing/` and `run.sh`
-works out the rest.
+RAM in MB). A profile needs no harness change at all: a directory under
+`configs/cameras-testing/` with its defconfig and a `qemu-test.json`.
 
 ## The expected check list
 
