@@ -33,6 +33,7 @@ from .context import Ctx
 from .guest import Guest
 from .launch import find_qemu, start_qemu
 from .plan import OPTIONAL_SUITES, run_suites
+from .netlab import enter_netns
 from .qmp import Qmp
 from .results import TestResult
 from .serial import QemuSerial
@@ -87,6 +88,8 @@ def main():
         sys.exit(f"Unknown SoC: {args.soc}")
     if args.net == "tap" and os.geteuid() != 0:
         sys.exit("tap mode requires root (use run.sh, it handles sudo)")
+    if args.net == "tap":
+        enter_netns()          # re-execs once; returns only when inside
 
     machine, ram = SOC_MACHINES[args.soc]
     qemu = args.qemu or find_qemu()

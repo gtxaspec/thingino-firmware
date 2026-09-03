@@ -31,10 +31,11 @@ run.sh qemu_t31x_eth --only onvif,ipv6   # just these optional suites
 Anything after the profile name is passed through to `harness.py`, which
 also runs standalone if you need full control (`harness.py --help`).
 
-Requirements: `dnsmasq` and `tcpdump` installed (the lab starts its own
-dnsmasq and parks the system one), `npm ci` in this directory plus
-`npx playwright install chromium` for the browser tests, and passwordless
-`sudo` for tap mode.
+Requirements: `dnsmasq` and `tcpdump` installed, `npm ci` in this
+directory plus `npx playwright install chromium` for the browser tests,
+and passwordless `sudo` for tap mode. A tap run lives in its own network
+namespace (`qt-<pid>`), so it never touches the host's DNS, NTP or syslog
+ports, nothing gets parked, and several tap runs can share one host.
 
 ## Modality is the profile name
 
@@ -58,7 +59,8 @@ run.sh            profile -> soc/mode/image/qemu
     serial, qmp,  serial console (login, commands)  ──► ttyS0
     guest         QMP (link up/down, reset, regs)   ──► monitor
                   SSH channel (ephemeral ed25519)   ──► dropbear
-    netlab        qtap0 + dnsmasq: DHCPv4/RA/SLAAC/ ──► eth0
+    netlab        netns qt-<pid>: qtap0 + dnsmasq    ──► eth0
+                  DHCPv4/RA/SLAAC/
                   DHCPv6/DNS, SNTP + syslog sinks,
                   WS-Discovery and mDNS probes
     onvif_client  SOAP + WS-UsernameToken           ──► onvif_simple_server
@@ -185,3 +187,8 @@ These all cost real debugging time; check them before going deeper.
   MAC each boot, so after a reboot re-add the address statically and ping
   the gateway once to refresh the stale ARP entry.
 - **Build load causes timing flakes.** Do not compile while a suite runs.
+- **A killed tap run leaves qemu and dnsmasq alive in its namespace.**
+  They cannot block the next run, and the next run reaps them, but if
+  you are hunting stray CPU, `ip netns list` shows them as `qt-<pid>`;
+  never `pkill -x qemu-system-mipsel`, the name is truncated to 15
+  chars and matches nothing.
