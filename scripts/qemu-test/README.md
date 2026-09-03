@@ -141,6 +141,14 @@ so there is no second list to update.
   guest is slow and load-sensitive; every fixed wait in here has flaked at
   least once.
 
+### Adding a browser scenario
+
+The plan hands Playwright a manifest (`pw-manifest.json` in the report
+dir) naming the scenarios to run and their URLs; `playwright-portal.js`
+skips any describe block whose key is absent. A new scenario is a describe
+block keyed on a new manifest field plus that field in the suite that
+wants it. There are no environment flags to keep in step.
+
 ### Adding a SoC or profile
 
 A SoC is one line in `SOC_MACHINES` in `qemutest/config.py` (machine name,

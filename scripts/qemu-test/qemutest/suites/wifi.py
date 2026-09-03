@@ -182,14 +182,9 @@ def test_provision_reboot_sta(ctx):
                      45, 2)
     res.check("webui_up_after_reboot", webui_up)
     if webui_up:
-        run_playwright(res, report_dir, "webui-login", {
-            "WEBUI_URL": f"http://localhost:{WEBUI_PORT + 1}",
-            "WEBUI_PORT": str(WEBUI_PORT + 1),
-            "WEBUI_LOGIN": "1",
-            "WEBUI_PASS": "TestPass1",
-            "SKIP_PORTAL": "1",
-            "SKIP_WEBUI": "1",
-            "SKIP_PROVISION": "1",
+        run_playwright(res, report_dir, {
+            "login": {"url": f"http://localhost:{WEBUI_PORT + 1}",
+                      "password": "TestPass1"},
         }, check_name="webui_login_screens")
 
 

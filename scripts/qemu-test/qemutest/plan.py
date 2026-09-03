@@ -1,6 +1,6 @@
 """The ordered suite table that drives a run."""
 
-from .config import PORTAL_PORT, SSH_FWD_PORT, WEBUI_PORT
+from .config import PORTAL_PORT, SSH_FWD_PORT
 from .playwright import run_playwright
 from .probes import tcp_open, until
 from .suites.common import setup_ssh, test_boot, test_health, test_services
@@ -40,22 +40,15 @@ def suite_net_services(ctx):
 
 
 def suite_playwright_wifi(ctx):
-    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, ctx.mode, {
-        "PORTAL_URL": f"http://localhost:{PORTAL_PORT}",
-        "WEBUI_URL": f"http://localhost:{WEBUI_PORT + 1}",
-        "WEBUI_PORT": str(WEBUI_PORT + 1),
-        "SKIP_WEBUI": "1",
+    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, {
+        "portal": {"url": f"http://localhost:{PORTAL_PORT}"},
+        "provision": True,
     })
 
 
 def suite_playwright_eth(ctx):
-    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, ctx.mode, {
-        "PORTAL_URL": f"http://{ctx.guest_v4}",
-        "WEBUI_URL": f"http://{ctx.guest_v4}",
-        "WEBUI_PORT": "80",
-        "SKIP_WEBUI": "0",
-        "SKIP_PORTAL": "1",
-        "SKIP_PROVISION": "1",
+    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, {
+        "webui": {"url": f"http://{ctx.guest_v4}"},
     })
 
 

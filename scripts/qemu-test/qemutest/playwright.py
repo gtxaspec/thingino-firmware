@@ -1,18 +1,31 @@
 """Browser test runner."""
 
+import json
 import os
 import subprocess
 
 from .config import SCRIPT_DIR
 
 
-def run_playwright(res, report_dir, mode, urls, timeout=120,
+def run_playwright(res, report_dir, scenarios, timeout=120,
                   check_name="playwright_tests"):
+    """Run the browser scenarios named in the manifest.
+
+    scenarios is what the plan wants exercised, keyed by describe block:
+      portal     {"url": ...}                the captive portal loads
+      provision  True                        fill the portal and submit
+      webui      {"url": ...}                the main web UI loads
+      login      {"url": ..., "password"}    the provisioned password logs in
+    Absent keys are skipped on the JS side; one source of truth, no env
+    flags to keep in step with the spec."""
     print("\n── Playwright ──")
     script_dir = SCRIPT_DIR
+    manifest = os.path.join(report_dir, "pw-manifest.json")
+    with open(manifest, "w") as f:
+        json.dump(scenarios, f, indent=2)
     env = os.environ.copy()
     env["REPORT_DIR"] = report_dir
-    env.update(urls)
+    env["PW_MANIFEST"] = manifest
     if os.geteuid() == 0:
         env["CHROMIUM_NO_SANDBOX"] = "1"
         # browsers live in the invoking user's cache, not root's
