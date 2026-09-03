@@ -61,3 +61,34 @@ class TestResult:
         with open(path, "w") as f:
             json.dump(self.results, f, indent=2)
         print(f"Results saved to {path}")
+
+    def names(self):
+        return [r["name"] for r in self.results]
+
+    def diff_expected(self, expected):
+        """Compare the emitted check names, in order, with the profile's
+        expected list. Returns human-readable lines; empty means a match.
+        Check names are the API: a check that vanishes (a skipped row, a
+        suite that bailed early) or moves is a failure in its own right."""
+        got = self.names()
+        if got == expected:
+            return []
+        lines = [f"check list differs from the expected {len(expected)} "
+                 f"(got {len(got)})"]
+        se, sg = set(expected), set(got)
+        if se - sg:
+            lines.append("  missing: " + ", ".join(sorted(se - sg)))
+        if sg - se:
+            lines.append("  new:     " + ", ".join(sorted(sg - se)))
+        if se == sg:
+            for i, (e, g) in enumerate(zip(expected, got)):
+                if e != g:
+                    lines.append(f"  first reorder at #{i}: "
+                                 f"expected {e!r}, got {g!r}")
+                    break
+        return lines
+
+
+def load_expected(path):
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]

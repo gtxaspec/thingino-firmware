@@ -35,7 +35,7 @@ from .launch import find_qemu, start_qemu
 from .plan import OPTIONAL_SUITES, run_suites
 from .netlab import enter_netns
 from .qmp import Qmp
-from .results import TestResult
+from .results import TestResult, load_expected
 from .serial import QemuSerial
 
 
@@ -82,6 +82,9 @@ def main():
     p.add_argument("--only", default=None,
                    help="Comma list of optional suites to run: "
                         + ",".join(OPTIONAL_SUITES))
+    p.add_argument("--update-expected", action="store_true",
+                   help="Record this run's check list as the profile's "
+                        "expected list instead of enforcing it")
     args = p.parse_args()
 
     if args.soc not in SOC_MACHINES:
@@ -236,6 +239,33 @@ def main():
         cleanup()
 
     success = res.summary()
+
+    # The ordered check list is the contract a profile makes with its
+    # readers (reports, CI diffs). It lives beside the profile and any
+    # deviation fails the run, so a check cannot silently disappear.
+    expected_file = os.path.join(REPO_ROOT, "configs", "cameras-testing",
+                                 profile, "expected-checks.txt")
+    shown = os.path.relpath(expected_file, REPO_ROOT)
+    if args.update_expected:
+        with open(expected_file, "w") as f:
+            f.write("\n".join(res.names()) + "\n")
+        print(f"Expected check list written to {shown}"
+              + ("" if success else " (from a run with failures)"))
+    elif args.only:
+        pass                        # a partial run by design
+    elif os.path.exists(expected_file):
+        diff = res.diff_expected(load_expected(expected_file))
+        if diff:
+            print(f"\nEXPECTED CHECK LIST MISMATCH ({shown})")
+            for line in diff:
+                print(line)
+            print("(rerun with --update-expected if the change is intended)")
+            success = False
+        else:
+            print(f"Check list matches {shown}")
+    else:
+        print(f"(no expected check list at {shown}; "
+              "run with --update-expected to record one)")
     sys.exit(0 if success else 1)
 
 

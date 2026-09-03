@@ -138,6 +138,24 @@ RAM in MB). A profile needs no harness change at all: name it
 `qemu_<soc>[_eth|_ethwifi]` under `configs/cameras-testing/` and `run.sh`
 works out the rest.
 
+## The expected check list
+
+Each profile carries `configs/cameras-testing/<profile>/expected-checks.txt`:
+the check names a run must emit, in order. The driver compares every full
+run against it and fails on any deviation, so a check cannot vanish
+quietly (a suite that bailed early, a row skipped because something it
+required was never discovered) and a reorder is visible. `--only` runs
+are partial by design and are not compared.
+
+After adding, renaming or reordering checks on purpose, record the new
+contract from a green run:
+
+```sh
+run.sh qemu_t31x_eth --update-expected
+```
+
+and commit the file with the change that caused it.
+
 ## Reports
 
 Everything lands in `output/<branch>/qemu-test-reports/<profile>/`:
