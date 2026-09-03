@@ -422,9 +422,46 @@ class TestResult:
         print(f"Results saved to {path}")
 
 
+class Ctx:
+    """Everything a suite may need, in one place.
+
+    Suites take just this and read what they use, so adding a suite never
+    means threading another positional argument through main(). Suites
+    that discover something (an address, a browser result) assign it back
+    onto the context for later suites to require.
+    """
+
+    def __init__(self, guest, ser, res, args, report_dir, meta):
+        self.guest = guest
+        self.ser = ser
+        self.res = res
+        self.args = args
+        self.report_dir = report_dir
+        self.meta = meta
+        self.mode = args.mode
+        self.lab = None
+        self.qmp = None
+        self.guest_v4 = None
+        self.guest_v6 = None
+        self.playwright_ok = False
+
+    def has(self, capability):
+        return {
+            "lab": self.lab is not None,
+            "nolab": self.lab is None,
+            "qmp": self.qmp is not None,
+            "v4": self.guest_v4 is not None,
+            "host": self.args.host_tests,
+            "pw": self.args.playwright,
+            "pw_ok": self.playwright_ok,
+            "reboot": self.args.reboot_test,
+        }[capability]
+
+
 # ── Common test suites ───────────────────────────────────────
 
-def test_boot(guest, res, meta):
+def test_boot(ctx):
+    guest, res, meta = ctx.guest, ctx.res, ctx.meta
     rc, out = guest.run("cat /proc/version")
     res.check("kernel_booted", "Linux" in out)
     m = re.search(r"Linux version (\S+)", out)
@@ -443,7 +480,8 @@ def test_boot(guest, res, meta):
         res.fail("processes_running", "could not parse ps output")
 
 
-def test_services(guest, res, mode):
+def test_services(ctx):
+    guest, res, mode = ctx.guest, ctx.res, ctx.mode
     rc, out = guest.run("ps w")
     res.check("dropbear_running", "dropbear" in out)
     res.check("syslogd_running", "syslogd" in out)
@@ -451,8 +489,9 @@ def test_services(guest, res, mode):
         res.check("wpa_supplicant_running", "wpa_supplicant" in out)
 
 
-def test_health(guest, res):
+def test_health(ctx):
     """Kernel and system health gates."""
+    guest, res = ctx.guest, ctx.res
     rc, out = guest.run("dmesg", timeout=30)
     bad = re.findall(r"(Oops|BUG:|Kernel panic|Unable to handle)", out)
     # "Call Trace" is fatal unless it is the ingenic-sdk sensor probe
@@ -461,8 +500,8 @@ def test_health(guest, res):
     benign = 0
     for i, line in enumerate(lines):
         if "Call Trace" in line:
-            ctx = "\n".join(lines[max(0, i - 10):i])
-            if re.search(r"is not an? \w+ chip", ctx):
+            preceding = "\n".join(lines[max(0, i - 10):i])
+            if re.search(r"is not an? \w+ chip", preceding):
                 benign += 1
             else:
                 bad.append("Call Trace")
@@ -490,8 +529,9 @@ def test_health(guest, res):
     res.check("memory_floor", free_mb >= 16, f"{free_mb} MB reclaimable")
 
 
-def setup_ssh(guest, ser, res, report_dir, addr, port=22):
+def setup_ssh(ctx, addr, port=22):
     """Install an ephemeral pubkey via serial, then switch to SSH."""
+    guest, ser, res, report_dir = ctx.guest, ctx.ser, ctx.res, ctx.report_dir
     key = os.path.join(report_dir, "id_ed25519")
     for p in (key, key + ".pub"):
         if os.path.exists(p):
@@ -508,7 +548,8 @@ def setup_ssh(guest, ser, res, report_dir, addr, port=22):
 
 # ── WiFi suites (slirp) ──────────────────────────────────────
 
-def test_wifi_portal(guest, res):
+def test_wifi_portal(ctx):
+    guest, res = ctx.guest, ctx.res
     # The portal is deferred behind the wired-uplink probe and its radio
     # prescan, so it can trail login by tens of seconds. Wait for the AP.
     deadline = time.time() + 120
@@ -541,7 +582,8 @@ def test_wifi_portal(guest, res):
     res.check("portal_mode_flag", "No such file" not in out)
 
 
-def test_wifi_modules(guest, res):
+def test_wifi_modules(ctx):
+    guest, res = ctx.guest, ctx.res
     rc, out = guest.run("lsmod")
     res.check("hwsim_loaded", "mac80211_hwsim" in out)
 
@@ -550,8 +592,9 @@ def test_wifi_modules(guest, res):
     res.check("wlan1_exists", "wlan1" in out)
 
 
-def test_wifi_bridge_setup(guest, res):
+def test_wifi_bridge_setup(ctx):
     """Set up eth0 for SLIRP bridge (WiFi-only profile with GMAC driver)."""
+    guest, res = ctx.guest, ctx.res
     guest.run("ip link set eth0 up", timeout=8)
     # The a1 xgmac model loses a few RX frames right after ifup, so give
     # the exchange more rounds than the udhcpc default.
@@ -564,9 +607,11 @@ def test_wifi_bridge_setup(guest, res):
     res.check("bridge_ip_forward", "1" in out)
 
 
-def test_provision_reboot_sta(ser, guest, res, report_dir, qmp=None,
-                              timeout=240):
+def test_provision_reboot_sta(ctx):
     """After portal submit: wait for reboot, set up fake AP, verify STA."""
+    ser, guest, res = ctx.ser, ctx.guest, ctx.res
+    report_dir, qmp = ctx.report_dir, ctx.qmp
+    timeout = max(ctx.args.timeout, 240)
     print("\n── Post-provision reboot ──")
     print("  Waiting for guest reboot...")
     # Drop the SLIRP link for the STA boot: the qemu profile has a GMAC
@@ -701,7 +746,8 @@ def test_provision_reboot_sta(ser, guest, res, report_dir, qmp=None,
         }, check_name="webui_login_screens")
 
 
-def test_host_portal_access(res):
+def test_host_portal_access(ctx):
+    res = ctx.res
     import urllib.request
     try:
         req = urllib.request.urlopen(
@@ -714,7 +760,8 @@ def test_host_portal_access(res):
         res.fail("host_portal_reachable", str(e))
 
 
-def test_host_webui_access(res):
+def test_host_webui_access(ctx):
+    res = ctx.res
     import urllib.request
     try:
         req = urllib.request.urlopen(
@@ -728,7 +775,8 @@ def test_host_webui_access(res):
 
 # ── Ethernet suites ──────────────────────────────────────────
 
-def test_ethernet(guest, res, lab=None):
+def test_ethernet(ctx):
+    guest, res = ctx.guest, ctx.res
     ok = False
     out = ""
     deadline = time.time() + 45
@@ -744,7 +792,8 @@ def test_ethernet(guest, res, lab=None):
     res.check("default_route_exists", "default" in out)
 
 
-def test_webui(guest, res):
+def test_webui(ctx):
+    guest, res = ctx.guest, ctx.res
     rc, out = guest.run(
         "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/", timeout=15)
     res.check("webui_http_200", "200" in out)
@@ -755,7 +804,8 @@ def test_webui(guest, res):
               "portal" not in out.lower() or "preview" in out.lower())
 
 
-def test_ethwifi_behavior(guest, res):
+def test_ethwifi_behavior(ctx):
+    guest, res = ctx.guest, ctx.res
     """Wired takeover: S40wired-gateway stops the portal, kills wpa,
     and unloads the WLAN module once a wired uplink exists."""
     rc, out = guest.run("cat /run/portal_mode 2>&1")
@@ -798,7 +848,8 @@ def in_dhcpv6_range(addr):
     return bool(m and 0x100 <= int(m.group(1), 16) <= 0x1ff)
 
 
-def test_ipv4_dhcp(guest, res, lab):
+def test_ipv4_dhcp(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
     """DHCPv4 against the host dnsmasq."""
     ok = False
     deadline = time.time() + 60
@@ -823,10 +874,11 @@ def test_ipv4_dhcp(guest, res, lab):
     lease = lab.wait_lease(want_v4=True, timeout=10)
     res.check("dhcp4_server_lease", lease is not None,
               f"{lease['addr']} hostname={lease['hostname']}" if lease else "")
-    return addrs["v4"][0] if addrs["v4"] else None
+    ctx.guest_v4 = addrs["v4"][0] if addrs["v4"] else None
 
 
-def test_ipv6(guest, res, lab):
+def test_ipv6(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
     """Link-local, DAD, SLAAC, DHCPv6, RDNSS."""
     ll = None
     deadline = time.time() + 30
@@ -901,10 +953,11 @@ def test_ipv6(guest, res, lab):
     rc, out = guest.run("cat /etc/resolv.conf")
     res.check("ipv6_dns_in_resolv", "fd00:5c1::1" in out,
               "DNS from DHCPv6/RDNSS")
-    return slaac
+    ctx.guest_v6 = slaac
 
 
-def test_dns_and_pref(guest, res, lab):
+def test_dns_and_pref(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
     # Explicit server query: the DHCP-provided DNS answers A records.
     # (Plain nslookup iterates every resolv.conf server including the
     # static public fallbacks, which have no route in the lab.)
@@ -929,7 +982,8 @@ def test_dns_and_pref(guest, res, lab):
               f"dual A/AAAA name connected over {hit_fam or 'nothing'}")
 
 
-def test_dual_stack_listeners(guest, res):
+def test_dual_stack_listeners(ctx):
+    guest, res = ctx.guest, ctx.res
     rc, out = guest.run("netstat -tln 2>/dev/null", timeout=15)
     res.check("http_listens_v6", ":::80" in out or "::80" in out.replace(" ", ""),
               "uhttpd should be dual-stack per IPv6-first policy")
@@ -938,7 +992,8 @@ def test_dual_stack_listeners(guest, res):
     res.check("https_listening", https)
 
 
-def test_host_http(res, guest_v4, guest_v6):
+def test_host_http(ctx):
+    res, guest_v4, guest_v6 = ctx.res, ctx.guest_v4, ctx.guest_v6
     import urllib.request
     for fam, addr in (("v4", guest_v4), ("v6", f"[{guest_v6}]" if guest_v6 else None)):
         name = f"host_http_{fam}"
@@ -1035,7 +1090,9 @@ def streamer_auth(guest):
     return None, None, "none"
 
 
-def test_onvif(guest, res, lab, guest_v4, report_dir):
+def test_onvif(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
+    guest_v4, report_dir = ctx.guest_v4, ctx.report_dir
     from onvif import OnvifDevice, xml_tag
 
     def dump(name, status, text):
@@ -1115,7 +1172,8 @@ def test_onvif(guest, res, lab, guest_v4, report_dir):
                   uri or f"HTTP {status}")
 
 
-def test_mdns(guest, res, lab, guest_v4):
+def test_mdns(ctx):
+    guest, res, lab, guest_v4 = ctx.guest, ctx.res, ctx.lab, ctx.guest_v4
     rc, hostname = guest.run("hostname")
     hostname = hostname.strip().split("\n")[-1].strip()
     if not hostname:
@@ -1166,7 +1224,8 @@ def test_mdns(guest, res, lab, guest_v4):
         res.fail("mdns_http_srv", "no _http._tcp instance answered")
 
 
-def test_ntp(guest, res, lab):
+def test_ntp(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
     before = lab.sntp.requests
     rc, out = guest.run("ntpd -n -q -p 192.168.100.1 2>&1", timeout=30)
     served = lab.sntp.requests > before
@@ -1178,7 +1237,8 @@ def test_ntp(guest, res, lab):
               f"year={year}")
 
 
-def test_syslog_remote(guest, res, lab):
+def test_syslog_remote(ctx):
+    guest, res, lab = ctx.guest, ctx.res, ctx.lab
     """Point busybox syslogd at the host sink and verify delivery."""
     guest.run("killall syslogd 2>/dev/null; sleep 1; "
               "syslogd -R 192.168.100.1", timeout=10)
@@ -1198,7 +1258,9 @@ def test_syslog_remote(guest, res, lab):
               ">/dev/null 2>&1", timeout=10)
 
 
-def test_link_flap(guest, res, qmp, lab, guest_v4):
+def test_link_flap(ctx):
+    guest, res, qmp = ctx.guest, ctx.res, ctx.qmp
+    lab, guest_v4 = ctx.lab, ctx.guest_v4
     """Drop and restore the link via QMP. The GMAC model mirrors the
     backend link state into the PHY's BMSR, and the guest drivers poll
     the PHY, so carrier must follow within a few poll intervals."""
@@ -1254,8 +1316,10 @@ def warm_reset_timer_wedge(report_dir):
         return False
 
 
-def test_persist_reboot(ser, guest, res, report_dir, timeout=240):
+def test_persist_reboot(ctx):
     """Overlay persistence: write markers, reboot, verify."""
+    ser, guest, res, report_dir = ctx.ser, ctx.guest, ctx.res, ctx.report_dir
+    timeout = max(ctx.args.timeout, 240)
     print("\n── Persistence reboot ──")
     marker = f"marker-{int(time.time())}"
     guest.run(f"touch /etc/qemu-test-marker && "
@@ -1338,6 +1402,150 @@ def run_playwright(res, report_dir, mode, urls, timeout=120,
     return pw.returncode == 0
 
 
+# ── Suite registry ───────────────────────────────────────────
+#
+# One ordered table drives the whole run. A suite is declared once, with
+# the modes it applies to and the capabilities it needs, and everything
+# else (execution order, --only filtering, the --only help text) derives
+# from it. Adding a suite is one entry; nothing in main() changes.
+#
+# The table is the union of both test plans: mode filtering alone yields
+# the wifi sequence and the eth/ethwifi sequence, so the rows stay in one
+# list rather than diverging into per-mode schedules.
+
+def suite_ssh_lab(ctx):
+    setup_ssh(ctx, ctx.guest_v4)
+
+
+def suite_ssh_forward(ctx):
+    time.sleep(2)                      # let the bridge settle before keying
+    setup_ssh(ctx, "127.0.0.1", SSH_FWD_PORT)
+
+
+def suite_dns(ctx):
+    test_dns_and_pref(ctx)
+    test_dual_stack_listeners(ctx)
+
+
+def suite_net_services(ctx):
+    test_mdns(ctx)
+    test_ntp(ctx)
+    test_syslog_remote(ctx)
+
+
+def suite_playwright_wifi(ctx):
+    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, ctx.mode, {
+        "PORTAL_URL": f"http://localhost:{PORTAL_PORT}",
+        "WEBUI_URL": f"http://localhost:{WEBUI_PORT + 1}",
+        "WEBUI_PORT": str(WEBUI_PORT + 1),
+        "SKIP_WEBUI": "1",
+    })
+
+
+def suite_playwright_eth(ctx):
+    ctx.playwright_ok = run_playwright(ctx.res, ctx.report_dir, ctx.mode, {
+        "PORTAL_URL": f"http://{ctx.guest_v4}",
+        "WEBUI_URL": f"http://{ctx.guest_v4}",
+        "WEBUI_PORT": "80",
+        "SKIP_WEBUI": "0",
+        "SKIP_PORTAL": "1",
+        "SKIP_PROVISION": "1",
+    })
+
+
+ALL_MODES = ("wifi", "eth", "ethwifi")
+WIRED = ("eth", "ethwifi")
+
+
+class Suite:
+    """One row of the run plan.
+
+    name      --only token, and the label; rows may share one (a token
+              like "webui" can pull in more than one row)
+    fn        callable taking the run context
+    modes     modes this row applies to
+    requires  capability names from Ctx.has(); an unmet requirement skips
+              the row silently, exactly as the old inline guards did
+    header    section banner printed before the row, if any
+    optional  False = always runs, never filtered out by --only
+    """
+
+    def __init__(self, name, fn, modes=ALL_MODES, requires=(), header=None,
+                 optional=True):
+        self.name = name
+        self.fn = fn
+        self.modes = modes
+        self.requires = requires
+        self.header = header
+        self.optional = optional
+
+    def wanted(self, ctx, only):
+        if ctx.mode not in self.modes:
+            return False
+        if self.optional and only and self.name not in only:
+            return False
+        return all(ctx.has(c) for c in self.requires)
+
+
+SUITES = [
+    Suite("boot", test_boot, optional=False),
+    Suite("procs", test_services, optional=False),
+
+    Suite("wifi", test_wifi_modules, ("wifi",), header="WiFi",
+          optional=False),
+    Suite("wifi", test_wifi_portal, ("wifi",), optional=False),
+
+    Suite("ethernet", test_ethernet, WIRED, header="Ethernet",
+          optional=False),
+    Suite("ethwifi", test_ethwifi_behavior, ("ethwifi",),
+          header="Ethernet + WiFi behavior", optional=False),
+
+    Suite("ipv4", test_ipv4_dhcp, WIRED, ("lab",), header="IPv4 DHCP",
+          optional=False),
+    Suite("ssh", suite_ssh_lab, WIRED, ("lab", "v4"), optional=False),
+    Suite("ipv6", test_ipv6, WIRED, ("lab",), header="IPv6"),
+    Suite("dns", suite_dns, WIRED, ("lab",), header="DNS / dual-stack"),
+
+    Suite("health", test_health, header="Health"),
+
+    Suite("webui", test_webui, WIRED, header="Web UI"),
+    Suite("webui", test_host_http, WIRED, ("lab", "v4")),
+    Suite("onvif", test_onvif, WIRED, ("lab", "v4"), header="ONVIF"),
+    Suite("services", suite_net_services, WIRED, ("lab", "v4"),
+          header="mDNS / NTP / syslog"),
+
+    Suite("bridge", test_wifi_bridge_setup, ("wifi",), ("host",),
+          header="Bridge setup", optional=False),
+    Suite("ssh", suite_ssh_forward, ("wifi",), ("host",), optional=False),
+    Suite("portal", test_host_portal_access, ("wifi",), ("host",),
+          header="Host access", optional=False),
+
+    Suite("playwright", suite_playwright_wifi, ("wifi",), ("pw", "host")),
+    # Only meaningful once the browser has actually submitted the portal
+    # form, so it requires the playwright row above to have passed.
+    Suite("persist", test_provision_reboot_sta, ("wifi",),
+          ("pw", "host", "reboot", "pw_ok"), optional=False),
+
+    Suite("playwright", suite_playwright_eth, WIRED, ("pw", "lab", "v4")),
+    Suite("webui", test_host_webui_access, WIRED, ("host", "nolab"),
+          header="Host access"),
+    Suite("linkflap", test_link_flap, WIRED, ("lab", "qmp", "v4"),
+          header="Link flap"),
+    Suite("persist", test_persist_reboot, WIRED, ("reboot",)),
+]
+
+OPTIONAL_SUITES = sorted({s.name for s in SUITES if s.optional})
+
+
+def run_suites(ctx, only):
+    for suite in SUITES:
+        if not suite.wanted(ctx, only):
+            continue
+        if suite.header:
+            print(f"\n── {suite.header} ──")
+        suite.fn(ctx)
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main():
@@ -1363,9 +1571,8 @@ def main():
     p.add_argument("--profile", default=None,
                    help="Profile name for reporting (default qemu_<soc>)")
     p.add_argument("--only", default=None,
-                   help="Comma list of optional suites to run (eth modes): "
-                        "ipv6,dns,health,webui,onvif,services,playwright,"
-                        "linkflap,persist")
+                   help="Comma list of optional suites to run: "
+                        + ",".join(OPTIONAL_SUITES))
     args = p.parse_args()
 
     if args.soc not in SOC_MACHINES:
@@ -1437,6 +1644,9 @@ def main():
     guest = Guest(ser)
     res = TestResult()
     qmp = None
+    ctx = Ctx(guest, ser, res, args, report_dir, meta)
+    ctx.lab = lab
+    only = [s.strip() for s in args.only.split(",")] if args.only else None
 
     def cleanup(sig=None, frame=None):
         try:
@@ -1498,102 +1708,8 @@ def main():
         except RuntimeError as e:
             print(f"  (QMP unavailable: {e})")
 
-        test_boot(guest, res, meta)
-        test_services(guest, res, args.mode)
-
-        if args.mode == "wifi":
-            print("\n── WiFi ──")
-            test_wifi_modules(guest, res)
-            test_wifi_portal(guest, res)
-            print("\n── Health ──")
-            test_health(guest, res)
-
-            if args.host_tests:
-                print("\n── Bridge setup ──")
-                test_wifi_bridge_setup(guest, res)
-                time.sleep(2)
-                setup_ssh(guest, ser, res, report_dir,
-                          "127.0.0.1", SSH_FWD_PORT)
-                print("\n── Host access ──")
-                test_host_portal_access(res)
-
-            if args.playwright and args.host_tests:
-                ok = run_playwright(res, report_dir, args.mode, {
-                    "PORTAL_URL": f"http://localhost:{PORTAL_PORT}",
-                    "WEBUI_URL": f"http://localhost:{WEBUI_PORT + 1}",
-                    "WEBUI_PORT": str(WEBUI_PORT + 1),
-                    "SKIP_WEBUI": "1",
-                })
-                if ok and args.reboot_test:
-                    test_provision_reboot_sta(ser, guest, res, report_dir,
-                                              qmp=qmp,
-                                              timeout=max(args.timeout, 240))
-
-        else:  # eth / ethwifi
-            print("\n── Ethernet ──")
-            test_ethernet(guest, res, lab)
-
-            if args.mode == "ethwifi":
-                print("\n── Ethernet + WiFi behavior ──")
-                test_ethwifi_behavior(guest, res)
-
-            def want(suite):
-                return not args.only or suite in args.only.split(",")
-
-            guest_v4 = guest_v6 = None
-            if lab:
-                print("\n── IPv4 DHCP ──")
-                guest_v4 = test_ipv4_dhcp(guest, res, lab)
-                if guest_v4:
-                    setup_ssh(guest, ser, res, report_dir, guest_v4)
-                if want("ipv6"):
-                    print("\n── IPv6 ──")
-                    guest_v6 = test_ipv6(guest, res, lab)
-                if want("dns"):
-                    print("\n── DNS / dual-stack ──")
-                    test_dns_and_pref(guest, res, lab)
-                    test_dual_stack_listeners(guest, res)
-
-            if want("health"):
-                print("\n── Health ──")
-                test_health(guest, res)
-
-            if want("webui"):
-                print("\n── Web UI ──")
-                test_webui(guest, res)
-                if lab and guest_v4:
-                    test_host_http(res, guest_v4, guest_v6)
-
-            if lab and guest_v4:
-                if want("onvif"):
-                    print("\n── ONVIF ──")
-                    test_onvif(guest, res, lab, guest_v4, report_dir)
-                if want("services"):
-                    print("\n── mDNS / NTP / syslog ──")
-                    test_mdns(guest, res, lab, guest_v4)
-                    test_ntp(guest, res, lab)
-                    test_syslog_remote(guest, res, lab)
-
-            if args.playwright and lab and guest_v4 and want("playwright"):
-                run_playwright(res, report_dir, args.mode, {
-                    "PORTAL_URL": f"http://{guest_v4}",
-                    "WEBUI_URL": f"http://{guest_v4}",
-                    "WEBUI_PORT": "80",
-                    "SKIP_WEBUI": "0",
-                    "SKIP_PORTAL": "1",
-                    "SKIP_PROVISION": "1",
-                })
-            elif args.host_tests and not lab:
-                print("\n── Host access ──")
-                test_host_webui_access(res)
-
-            if lab and qmp and guest_v4 and want("linkflap"):
-                print("\n── Link flap ──")
-                test_link_flap(guest, res, qmp, lab, guest_v4)
-
-            if args.reboot_test and want("persist"):
-                test_persist_reboot(ser, guest, res, report_dir,
-                                    timeout=max(args.timeout, 240))
+        ctx.qmp = qmp
+        run_suites(ctx, only)
 
         print("\n── Artifacts ──")
         collect_artifacts(guest, report_dir)
