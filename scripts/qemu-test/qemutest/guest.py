@@ -49,7 +49,22 @@ class Guest:
             lines = lines[1:]                 # drop command echo
         return int(m.group(1)), "\n".join(lines)
 
+    def reboot(self):
+        """Ask the guest to reboot. Nothing is typed again until login()
+        has seen a reset banner and a fresh prompt."""
+        self.ser.read()                       # drop the buffered prompt
+        self.ser.write("reboot\n")
+        self.expect_reboot()
+
+    def expect_reboot(self):
+        """The guest is rebooting on its own (portal provisioning does
+        this); same gating as reboot() without sending the command."""
+        self.ser.state = "rebooting"
+        self.ssh_ok = False                   # key is gone with the boot
+
     def run(self, cmd, timeout=20, via=None):
+        if self.ser.state != "shell":
+            return -1, f"(guest not at shell: {self.ser.state})"
         if via == "serial" or (via != "ssh" and not self.ssh_ok):
             return self._serial(cmd, timeout)
         if via == "ssh" or self.ssh_ok:

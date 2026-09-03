@@ -290,12 +290,10 @@ def test_persist_reboot(ctx):
     guest.run(f"touch /etc/qemu-test-marker && "
               f"jct /etc/thingino.json set qemutest {marker}",
               via="serial", timeout=15)
-    ser.read()                 # drop the pre-reboot prompt still buffered
-    ser.write("reboot\n")
-    # expect_reboot: do not accept a prompt until the machine has actually
-    # reset, so we assert persistence against the rebooted system and not
-    # the dying pre-reboot shell.
-    if not ser.login(timeout, expect_reboot=True):
+    guest.reboot()
+    # login() refuses any prompt until the reset banner, so persistence is
+    # asserted against the rebooted system and not the dying shell.
+    if not ser.login(timeout):
         if warm_reset_timer_wedge(report_dir):
             res.xfail("persist_reboot_complete", False,
                       "QEMU warm-reset timer wedge (fork bug, "
@@ -307,7 +305,6 @@ def test_persist_reboot(ctx):
                      "no login prompt after reboot")
         return
     res.ok("persist_reboot_complete")
-    guest.ssh_ok = False
 
     # Positive sentinel: a bare "not absent" check reads as success against
     # a U-Boot "syntax error" too, so confirm the file is really there.

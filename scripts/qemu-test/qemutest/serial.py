@@ -15,6 +15,10 @@ class QemuSerial:
         self.fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
         self.log = open(log_path, "wb", buffering=0) if log_path else None
         self._dsr_tail = b""
+        # Where the guest is: "boot" until the first login, "shell" once a
+        # prompt is confirmed, "rebooting" from a reboot request until the
+        # next confirmed prompt. Commands only go out in "shell".
+        self.state = "boot"
 
     def read(self, timeout=2.0):
         buf = b""
@@ -47,6 +51,8 @@ class QemuSerial:
             os.write(self.fd, s.encode())
 
     def cmd(self, c, wait=2):
+        if self.state != "shell":
+            return ""                       # never type into a dying shell
         self.write(c + "\n")
         time.sleep(wait)
         return self.read()
@@ -71,7 +77,14 @@ class QemuSerial:
                 return m, buf
         return None, buf
 
-    def login(self, timeout=120, passwords=("root",), expect_reboot=False):
+    def login(self, timeout=120, passwords=("root",)):
+        """Reach a root shell; True moves the state to "shell"."""
+        ok = self._login(timeout, passwords)
+        if ok:
+            self.state = "shell"
+        return ok
+
+    def _login(self, timeout, passwords):
         # Test images set U-Boot env debug=1: the console getty spawns a
         # root shell directly, so a prompt may arrive instead of login:.
         buf = ""
@@ -80,9 +93,9 @@ class QemuSerial:
         # After a reboot the shell echoes one more prompt before it starts
         # tearing down; matching that stale prompt returns "logged in" while
         # the machine is actually on its way down (and any command we then
-        # type lands in the next boot's U-Boot autoboot). Gate on a genuine
-        # reset banner first so only a post-reboot prompt counts.
-        booted = not expect_reboot
+        # type lands in the next boot's U-Boot autoboot). While rebooting,
+        # gate on a genuine reset banner so only a post-reboot prompt counts.
+        booted = self.state != "rebooting"
         while time.time() < deadline:
             buf += self.read(1.0)
             plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf)

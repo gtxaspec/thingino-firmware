@@ -40,6 +40,9 @@ from .serial import QemuSerial
 
 def collect_artifacts(guest, report_dir):
     """Best-effort dump of guest logs into the report dir."""
+    if guest.ser.state != "shell":
+        print(f"  (artifacts skipped: guest not at shell: {guest.ser.state})")
+        return
     for name, cmd in (("dmesg.txt", "dmesg"),
                       ("logread.txt", "logread 2>/dev/null | tail -n 500"),
                       ("ps.txt", "ps w"),

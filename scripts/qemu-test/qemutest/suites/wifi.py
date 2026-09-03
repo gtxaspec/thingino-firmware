@@ -1,7 +1,6 @@
 """WiFi portal, provisioning and slirp host access."""
 
 import re
-import time
 from ..config import PORTAL_PORT, WEBUI_PORT
 from ..launch import warm_reset_timer_wedge
 from ..playwright import run_playwright
@@ -70,7 +69,9 @@ def test_provision_reboot_sta(ctx):
     # eth0 makes S40wired-gateway kill WiFi as "wired uplink present".
     if qmp:
         qmp.set_link("n0", False)
-    time.sleep(3)
+    # The portal reboots the camera itself; refuse any prompt until the
+    # reset banner so the dying pre-reboot shell cannot pass as the new one.
+    guest.expect_reboot()
     # Provisioning set the root password (playwright fills TestPass1)
     if not ser.login(timeout, passwords=("TestPass1", "root")):
         if warm_reset_timer_wedge(report_dir):
@@ -82,7 +83,6 @@ def test_provision_reboot_sta(ctx):
             qmp.set_link("n0", True)
         return
     res.ok("reboot_complete")
-    guest.ssh_ok = False                      # key not reinstalled after reboot
 
     # With the debug=1 console there is no login step, so verify the
     # provisioned password against the shadow hash on the guest.
