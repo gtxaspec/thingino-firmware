@@ -64,8 +64,10 @@ should be done on a real disk. See `docs/build/makefile.md`.
     (services, portal/provisioning, DHCPv4/v6, DNS, web UI, ONVIF, mDNS,
     NTP, syslog, link flap, persistence) with Playwright browser flows.
     Build with `make GROUP=testing CAMERA=qemu_t31x_eth fast`, run with
-    `scripts/qemu-test/run.sh qemu_t31x_eth`; add a check by adding one row
-    to the `SUITES` table in `harness.py`.
+    `scripts/qemu-test/run.sh qemu_t31x_eth`. A profile is a directory
+    under `configs/cameras-testing/` with a `qemu-test.json` and its
+    `expected-checks.txt` contract; add a check by adding one row to the
+    `SUITES` table in `scripts/qemu-test/qemutest/plan.py`.
   - `scripts/ota-tests/` covers the sysupgrade partition-fitting logic.
 
 ## Repo layout

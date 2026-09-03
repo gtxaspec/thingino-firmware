@@ -63,20 +63,24 @@ from the profile's name.
 ```
 host                                              QEMU guest
 ----                                              ----------
-run.sh            profile -> soc/mode/image/qemu
+run.sh            exec harness.py --profile <name>
   harness.py      entry point, runs qemutest/driver.py
   qemutest/
-    serial, qmp,  serial console (login, commands)  ──► ttyS0
-    guest         QMP (link up/down, reset, regs)   ──► monitor
-                  SSH channel (ephemeral ed25519)   ──► dropbear
-    netlab        netns qt-<pid>: qtap0 + dnsmasq    ──► eth0
-                  DHCPv4/RA/SLAAC/
-                  DHCPv6/DNS, SNTP + syslog sinks,
-                  WS-Discovery and mDNS probes
-    onvif_client  SOAP + WS-UsernameToken           ──► onvif_simple_server
-    playwright    portal + web UI in chromium       ──► uhttpd
+    profile       qemu-test.json -> soc, capabilities, backend;
+                  newest image under output/ and the QEMU beside it
+    driver        resolves the run, sudo and netns re-exec, boot, report
+    serial, qmp,  console with a guest state machine    ──► ttyS0
+    guest         QMP (link up/down, reset, regs)       ──► monitor
+                  SSH channel (ephemeral ed25519)       ──► dropbear
+    probes        until(): every wait is a condition
+    netlab        netns qt-<pid>: qtap0 + dnsmasq       ──► eth0
+                  DHCPv4/RA/SLAAC/DHCPv6/DNS, SNTP and
+                  syslog sinks, WS-Discovery, mDNS
+    onvif_client  SOAP + WS-UsernameToken               ──► onvif_simple_server
+    playwright    manifest-driven chromium scenarios    ──► uhttpd
     suites/       common, wifi, net, onvif, webui
     plan          the ordered suite table
+    results       the ordered check list and its contract
     report        report.html with screenshots
 ```
 
@@ -121,8 +125,9 @@ Capabilities come from `Ctx.has()`. What the profile is: `wired`,
 Table position is execution order. The table is the union of every
 profile's plan; filtering on capabilities alone yields the wifi-only
 sequence and the wired one, so put a row where it belongs relative to its
-neighbours and let the filter do the rest. `--only` tokens and the `--help` text derive from the table,
-so there is no second list to update.
+neighbours and let the filter do the rest. `--only` tokens and the
+`--help` text derive from the table, so there is no second list to
+update.
 
 ### Rules for suite functions
 
@@ -137,9 +142,13 @@ so there is no second list to update.
   `[ -f /path ] && echo OK` cannot.
 - Publish discoveries onto `ctx` (`ctx.guest_v4 = ...`) rather than
   returning them, so later rows can `require` them.
-- Poll with a deadline instead of sleeping a fixed amount. Under TCG the
-  guest is slow and load-sensitive; every fixed wait in here has flaked at
-  least once.
+- Wait with `probes.until()` or `guest.run_until()`, never `time.sleep()`.
+  Under TCG the guest is slow and load-sensitive; every fixed wait in here
+  has flaked at least once.
+- Reboot through `guest.reboot()`, or `guest.expect_reboot()` when the
+  guest reboots itself, then `login()`. The serial channel tracks boot,
+  shell and rebooting; `guest.run()` returns `(-1, "(guest not at shell:
+  ...)")` rather than typing into a dying shell or U-Boot.
 
 ### Adding a browser scenario
 
@@ -181,7 +190,8 @@ Everything lands in `output/<branch>/qemu-test-reports/<profile>/`:
 `meta.json` (profile, machine, image, qemu path, commit, boot seconds),
 `serial.log`, `qemu-stderr.log`, `dmesg.txt`, `logread.txt`, `ps.txt`,
 `netstat.txt`, `ipaddr.txt`, the dnsmasq config/log/leases, ONVIF SOAP
-dumps, Playwright screenshots, and on a boot failure two QMP register
+dumps, `pw-manifest.json` (the browser scenarios the plan requested),
+Playwright screenshots, and on a boot failure two QMP register
 snapshots five seconds apart plus a timestamped copy of the serial log
 (identical PCs across the two mean a hard CPU freeze rather than a slow
 guest).
@@ -207,15 +217,15 @@ These all cost real debugging time; check them before going deeper.
 - **After `reboot`, the shell echoes one more prompt before it dies.**
   Matching it reports "logged in" while the machine is still going down,
   and the next command lands in the *next* boot's U-Boot autoboot prompt.
-  Use `login(expect_reboot=True)` (`qemutest/serial.py`), which waits for a
-  reset banner first.
+  `guest.reboot()` marks the channel as rebooting, and `login()` then
+  refuses any prompt until a reset banner (`qemutest/serial.py`).
 - **The console shell answers a cursor-position probe** (`ESC[6n`) after
   login. Unanswered, it eats the next command; the serial reader replies
   automatically.
 - **Test images boot with `debug=1`** (`configs/cameras-testing/<profile>/uenv.txt`),
   so the console getty drops straight to a root shell with no login
   prompt. `login()` handles both.
-- **Wifi mode has an eth0 that real WiFi-only cameras lack.** An instant
+- **A wifi-only profile has an eth0 that real WiFi-only cameras lack.** An instant
   slirp lease makes the wired-gateway logic kill WiFi, so the STA test
   drops the link over QMP first.
 - **Slirp host forwards target `10.0.2.15`.** The guest re-randomises its
