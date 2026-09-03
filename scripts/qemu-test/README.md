@@ -52,16 +52,20 @@ suffix, so a bare name means `ethwifi` there.
 ```
 host                                              QEMU guest
 ----                                              ----------
-run.sh          profile -> soc/mode/image/qemu
-  harness.py    serial console (login, commands)  ──► ttyS0
-                QMP (link up/down, reset, regs)   ──► monitor
-                SSH channel (ephemeral ed25519)   ──► dropbear
-  netlab.py     qtap0 + dnsmasq: DHCPv4/RA/SLAAC/ ──► eth0
-                DHCPv6/DNS, SNTP + syslog sinks,
-                WS-Discovery and mDNS probes
-  onvif.py      SOAP + WS-UsernameToken           ──► onvif_simple_server
-  playwright    portal + web UI in chromium       ──► uhttpd
-  report.py     report.html with screenshots
+run.sh            profile -> soc/mode/image/qemu
+  harness.py      entry point, runs qemutest/driver.py
+  qemutest/
+    serial, qmp,  serial console (login, commands)  ──► ttyS0
+    guest         QMP (link up/down, reset, regs)   ──► monitor
+                  SSH channel (ephemeral ed25519)   ──► dropbear
+    netlab        qtap0 + dnsmasq: DHCPv4/RA/SLAAC/ ──► eth0
+                  DHCPv6/DNS, SNTP + syslog sinks,
+                  WS-Discovery and mDNS probes
+    onvif_client  SOAP + WS-UsernameToken           ──► onvif_simple_server
+    playwright    portal + web UI in chromium       ──► uhttpd
+    suites/       common, wifi, net, onvif, webui
+    plan          the ordered suite table
+    report        report.html with screenshots
 ```
 
 Lab addressing: `192.168.100.1/24` and `fd00:5c1::1/64` on `qtap0`, DHCP
@@ -69,9 +73,10 @@ pools `.50-.150` and `fd00:5c1::100-1ff`.
 
 ## Adding a suite
 
-Suites live in one ordered table, `SUITES` in `harness.py`. A suite is a
-function taking the run context, plus one table row. Nothing in `main()`
-changes.
+Suites live in one ordered table, `SUITES` in `qemutest/plan.py`. A suite
+is a function taking the run context, in the `qemutest/suites/` module for
+its domain (`common`, `wifi`, `net`, `onvif`, `webui`; a new domain gets a
+new module), plus one table row. Nothing in the driver changes.
 
 ```python
 def test_isp(ctx):
@@ -126,9 +131,10 @@ so there is no second list to update.
 
 ### Adding a SoC or profile
 
-A SoC is one line in `SOC_MACHINES` (machine name, RAM in MB). A profile
-needs no harness change at all: name it `qemu_<soc>[_eth|_ethwifi]` under
-`configs/cameras-testing/` and `run.sh` works out the rest.
+A SoC is one line in `SOC_MACHINES` in `qemutest/config.py` (machine name,
+RAM in MB). A profile needs no harness change at all: name it
+`qemu_<soc>[_eth|_ethwifi]` under `configs/cameras-testing/` and `run.sh`
+works out the rest.
 
 ## Reports
 
@@ -159,12 +165,13 @@ These all cost real debugging time; check them before going deeper.
 - **ONVIF credentials do not live in `onvif.json`.** The server reads
   RTSP auth from the streamer's own config, first of `/etc/prudynt.json`,
   `/etc/streamer.d/rtsp.json`, `/etc/timps.conf`, `raptorctl`. Use
-  `streamer_auth()`, which mirrors that order; a stale copy means 401
-  `NotAuthorized`.
+  `streamer_auth()` in `qemutest/suites/onvif.py`, which mirrors that
+  order; a stale copy means 401 `NotAuthorized`.
 - **After `reboot`, the shell echoes one more prompt before it dies.**
   Matching it reports "logged in" while the machine is still going down,
   and the next command lands in the *next* boot's U-Boot autoboot prompt.
-  Use `login(expect_reboot=True)`, which waits for a reset banner first.
+  Use `login(expect_reboot=True)` (`qemutest/serial.py`), which waits for a
+  reset banner first.
 - **The console shell answers a cursor-position probe** (`ESC[6n`) after
   login. Unanswered, it eats the next command; the serial reader replies
   automatically.
